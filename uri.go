@@ -52,8 +52,6 @@ type URI struct {
 	requestURI []byte
 
 	h *RequestHeader
-
-	noCopy
 }
 
 // CopyTo copies uri contents to dst.

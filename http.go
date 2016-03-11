@@ -39,8 +39,6 @@ type Request struct {
 	// Group bool members in order to reduce Request object size.
 	parsedURI      bool
 	parsedPostArgs bool
-
-	noCopy
 }
 
 // Response represents HTTP response.
@@ -68,8 +66,6 @@ type Response struct {
 	// Response.Write() skips writing body if set to true.
 	// Use it for writing HEAD responses.
 	SkipBody bool
-
-	noCopy
 }
 
 // SetRequestURI sets RequestURI.

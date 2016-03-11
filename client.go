@@ -203,8 +203,6 @@ type Client struct {
 	mLock sync.Mutex
 	m     map[string]*HostClient
 	ms    map[string]*HostClient
-
-	noCopy
 }
 
 // Get appends url contents to dst and returns it as body.
@@ -517,8 +515,6 @@ type HostClient struct {
 
 	readerPool sync.Pool
 	writerPool sync.Pool
-
-	noCopy
 }
 
 type clientConn struct {
