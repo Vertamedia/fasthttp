@@ -122,6 +122,8 @@ var defaultClient Client
 //
 // It is safe calling Client methods from concurrently running goroutines.
 type Client struct {
+	noCopy noCopy
+
 	// Client name. Used in User-Agent request header.
 	//
 	// Default client name is used if not set.
@@ -407,6 +409,8 @@ type DialFunc func(addr string) (net.Conn, error)
 //
 // It is safe calling HostClient methods from concurrently running goroutines.
 type HostClient struct {
+	noCopy noCopy
+
 	// Comma-separated list of upstream HTTP server host addresses,
 	// which are passed to Dial in round-robin manner.
 	//
@@ -1211,9 +1215,11 @@ func (c *HostClient) releaseReader(br *bufio.Reader) {
 	c.readerPool.Put(br)
 }
 
-var defaultTLSConfig = &tls.Config{
-	InsecureSkipVerify: true,
-	ClientSessionCache: tls.NewLRUClientSessionCache(0),
+func newDefaultTLSConfig() *tls.Config {
+	return &tls.Config{
+		InsecureSkipVerify: true,
+		ClientSessionCache: tls.NewLRUClientSessionCache(0),
+	}
 }
 
 func (c *HostClient) nextAddr() string {
@@ -1281,7 +1287,7 @@ func (c *HostClient) dialHost() (net.Conn, error) {
 	if c.IsTLS {
 		tlsConfig := c.TLSConfig
 		if tlsConfig == nil {
-			tlsConfig = defaultTLSConfig
+			tlsConfig = newDefaultTLSConfig()
 		}
 		conn = tls.Client(conn, tlsConfig)
 	}

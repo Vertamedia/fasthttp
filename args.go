@@ -36,6 +36,8 @@ var argsPool = &sync.Pool{
 //
 // Args instance MUST NOT be used from concurrently running goroutines.
 type Args struct {
+	noCopy noCopy
+
 	args  []argsKV
 	bufKV argsKV
 	buf   []byte
@@ -140,7 +142,7 @@ func (a *Args) Del(key string) {
 
 // DelBytes deletes argument with the given key from query args.
 func (a *Args) DelBytes(key []byte) {
-	a.args = delArg(a.args, key)
+	a.args = delAllArgs(a.args, key)
 }
 
 // Set sets 'key=value' argument.
@@ -286,14 +288,15 @@ func copyArgs(dst, src []argsKV) []argsKV {
 	return dst
 }
 
-func delArg(args []argsKV, key []byte) []argsKV {
+func delAllArgs(args []argsKV, key []byte) []argsKV {
 	for i, n := 0, len(args); i < n; i++ {
 		kv := &args[i]
 		if bytes.Equal(kv.key, key) {
 			tmp := *kv
 			copy(args[i:], args[i+1:])
-			args[n-1] = tmp
-			return args[:n-1]
+			n--
+			args[n] = tmp
+			args = args[:n]
 		}
 	}
 	return args
