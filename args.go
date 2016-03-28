@@ -36,11 +36,11 @@ var argsPool = &sync.Pool{
 //
 // Args instance MUST NOT be used from concurrently running goroutines.
 type Args struct {
+	noCopy noCopy
+
 	args  []argsKV
 	bufKV argsKV
 	buf   []byte
-
-	noCopy
 }
 
 type argsKV struct {
@@ -140,7 +140,7 @@ func (a *Args) Del(key string) {
 
 // DelBytes deletes argument with the given key from query args.
 func (a *Args) DelBytes(key []byte) {
-	a.args = delArg(a.args, key)
+	a.args = delAllArgs(a.args, key)
 }
 
 // Set sets 'key=value' argument.
@@ -286,14 +286,15 @@ func copyArgs(dst, src []argsKV) []argsKV {
 	return dst
 }
 
-func delArg(args []argsKV, key []byte) []argsKV {
+func delAllArgs(args []argsKV, key []byte) []argsKV {
 	for i, n := 0, len(args); i < n; i++ {
 		kv := &args[i]
 		if bytes.Equal(kv.key, key) {
 			tmp := *kv
 			copy(args[i:], args[i+1:])
-			args[n-1] = tmp
-			return args[:n-1]
+			n--
+			args[n] = tmp
+			args = args[:n]
 		}
 	}
 	return args
@@ -308,19 +309,7 @@ func setArg(h []argsKV, key, value []byte) []argsKV {
 			return h
 		}
 	}
-
-	if cap(h) > n {
-		h = h[:n+1]
-		kv := &h[n]
-		kv.key = append(kv.key[:0], key...)
-		kv.value = append(kv.value[:0], value...)
-		return h
-	}
-
-	var kv argsKV
-	kv.key = append(kv.key, key...)
-	kv.value = append(kv.value, value...)
-	return append(h, kv)
+	return appendArg(h, key, value)
 }
 
 func appendArg(args []argsKV, key, value []byte) []argsKV {

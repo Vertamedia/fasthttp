@@ -190,7 +190,11 @@ func NewPathPrefixStripper(prefixSize int) PathRewriteFunc {
 
 // FS represents settings for request handler serving static files
 // from the local filesystem.
+//
+// It is prohibited copying FS values. Create new values instead.
 type FS struct {
+	noCopy noCopy
+
 	// Path to the root directory to serve files from.
 	Root string
 
@@ -393,11 +397,7 @@ func (ff *fsFile) NewReader() (io.Reader, error) {
 func (ff *fsFile) smallFileReader() io.Reader {
 	v := ff.h.smallFileReaderPool.Get()
 	if v == nil {
-		r := &fsSmallFileReader{
-			ff:     ff,
-			endPos: ff.contentLength,
-		}
-		return r
+		v = &fsSmallFileReader{}
 	}
 	r := v.(*fsSmallFileReader)
 	r.ff = ff

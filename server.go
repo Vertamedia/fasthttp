@@ -137,6 +137,8 @@ type RequestHandler func(ctx *RequestCtx)
 //
 // It is safe to call Server methods from concurrently running goroutines.
 type Server struct {
+	noCopy noCopy
+
 	// Handler for processing incoming requests.
 	Handler RequestHandler
 
@@ -270,8 +272,6 @@ type Server struct {
 	writerPool     sync.Pool
 	hijackConnPool sync.Pool
 	bytePool       sync.Pool
-
-	noCopy
 }
 
 // TimeoutHandler creates RequestHandler, which returns StatusRequestTimeout
@@ -345,6 +345,8 @@ func CompressHandlerLevel(h RequestHandler, level int) RequestHandler {
 // running goroutines. The only exception is TimeoutError*, which may be called
 // while other goroutines accessing RequestCtx.
 type RequestCtx struct {
+	noCopy noCopy
+
 	// Incoming request.
 	//
 	// Copying Request by value is forbidden. Use pointer to Request instead.
@@ -376,8 +378,6 @@ type RequestCtx struct {
 	timeoutTimer    *time.Timer
 
 	hijackHandler HijackHandler
-
-	noCopy
 }
 
 // HijackHandler must process the hijacked connection c.
@@ -1180,6 +1180,8 @@ func (s *Server) Serve(ln net.Listener) error {
 			return err
 		}
 		if !wp.Serve(c) {
+			s.writeFastError(c, StatusServiceUnavailable,
+				"The connection cannot be served because Server.Concurrency limit exceeded")
 			c.Close()
 			if time.Since(lastOverflowErrorTime) > time.Minute {
 				s.logger().Printf("The incoming connection cannot be served, because %d concurrent connections are served. "+
@@ -1215,7 +1217,6 @@ func acceptConn(s *Server, ln net.Listener, lastPerIPErrorTime *time.Time) (net.
 		if s.MaxConnsPerIP > 0 {
 			pic := wrapPerIPConn(s, c)
 			if pic == nil {
-				c.Close()
 				if time.Since(*lastPerIPErrorTime) > time.Minute {
 					s.logger().Printf("The number of connections from %s exceeds MaxConnsPerIP=%d",
 						getConnIP4(c), s.MaxConnsPerIP)
@@ -1237,6 +1238,8 @@ func wrapPerIPConn(s *Server, c net.Conn) net.Conn {
 	n := s.perIPConnCounter.Register(ip)
 	if n > s.MaxConnsPerIP {
 		s.perIPConnCounter.Unregister(ip)
+		s.writeFastError(c, StatusTooManyRequests, "The number of connections from your ip exceeds MaxConnsPerIP")
+		c.Close()
 		return nil
 	}
 	return acquirePerIPConn(c, ip, &s.perIPConnCounter)
@@ -1278,7 +1281,6 @@ func (s *Server) ServeConn(c net.Conn) error {
 	if s.MaxConnsPerIP > 0 {
 		pic := wrapPerIPConn(s, c)
 		if pic == nil {
-			c.Close()
 			return ErrPerIPConnLimit
 		}
 		c = pic
@@ -1287,6 +1289,7 @@ func (s *Server) ServeConn(c net.Conn) error {
 	n := atomic.AddUint32(&s.concurrency, 1)
 	if n > uint32(s.getConcurrency()) {
 		atomic.AddUint32(&s.concurrency, ^uint32(0))
+		s.writeFastError(c, StatusServiceUnavailable, "The connection cannot be served because Server.Concurrency limit exceeded")
 		c.Close()
 		return ErrConcurrencyLimit
 	}
@@ -1785,4 +1788,16 @@ func (s *Server) getServerName() []byte {
 		serverName = v.([]byte)
 	}
 	return serverName
+}
+
+func (s *Server) writeFastError(w io.Writer, statusCode int, msg string) {
+	w.Write(statusLine(statusCode))
+	fmt.Fprintf(w, "Connection: close\r\n"+
+		"Server: %s\r\n"+
+		"Date: %s\r\n"+
+		"Content-Type: text/plain\r\n"+
+		"Content-Length: %d\r\n"+
+		"\r\n"+
+		"%s",
+		s.getServerName(), serverDate.Load(), len(msg), msg)
 }

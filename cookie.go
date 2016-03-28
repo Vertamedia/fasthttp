@@ -47,6 +47,8 @@ var cookiePool = &sync.Pool{
 //
 // Cookie instance MUST NOT be used from concurrently running goroutines.
 type Cookie struct {
+	noCopy noCopy
+
 	key    []byte
 	value  []byte
 	expire time.Time
@@ -55,8 +57,6 @@ type Cookie struct {
 
 	bufKV argsKV
 	buf   []byte
-
-	noCopy
 }
 
 // CopyTo copies src cookie to c.
@@ -240,17 +240,17 @@ func (c *Cookie) ParseBytes(src []byte) error {
 		if len(kv.key) == 0 && len(kv.value) == 0 {
 			continue
 		}
-		switch {
-		case bytes.Equal(strCookieExpires, kv.key):
+		switch string(kv.key) {
+		case "expires":
 			v := unsafeBytesToStr(kv.value)
 			exptime, err := time.ParseInLocation(time.RFC1123, v, time.UTC)
 			if err != nil {
 				return err
 			}
 			c.expire = exptime
-		case bytes.Equal(strCookieDomain, kv.key):
+		case "domain":
 			c.domain = append(c.domain[:0], kv.value...)
-		case bytes.Equal(strCookiePath, kv.key):
+		case "path":
 			c.path = append(c.path[:0], kv.value...)
 		}
 	}
