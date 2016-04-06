@@ -152,6 +152,14 @@ type Server struct {
 	// DefaultConcurrency is used if not set.
 	Concurrency int
 
+	// Whether to disable keep-alive connections.
+	//
+	// The server will close all the incoming connections after sending
+	// the first response to client if this option is set to true.
+	//
+	// By default keep-alive connections are enabled.
+	DisableKeepalive bool
+
 	// Per-connection buffer size for requests' reading.
 	// This also limits the maximum header size.
 	//
@@ -849,7 +857,7 @@ func (ctx *RequestCtx) Redirect(uri string, statusCode int) {
 // The redirect uri may be either absolute or relative to the current
 // request uri.
 func (ctx *RequestCtx) RedirectBytes(uri []byte, statusCode int) {
-	s := unsafeBytesToStr(uri)
+	s := b2s(uri)
 	ctx.Redirect(s, statusCode)
 }
 
@@ -1188,6 +1196,14 @@ func (s *Server) Serve(ln net.Listener) error {
 					"Try increasing Server.Concurrency", maxWorkersCount)
 				lastOverflowErrorTime = time.Now()
 			}
+
+			// The current server reached concurrency limit,
+			// so give other concurrently running servers a chance
+			// accepting incoming connections on the same address.
+			//
+			// There is a hope other servers didn't reach their
+			// concurrency limits yet :)
+			time.Sleep(100 * time.Millisecond)
 		}
 		c = nil
 	}
@@ -1224,7 +1240,7 @@ func acceptConn(s *Server, ln net.Listener, lastPerIPErrorTime *time.Time) (net.
 				}
 				continue
 			}
-			return pic, nil
+			c = pic
 		}
 		return c, nil
 	}
@@ -1325,14 +1341,17 @@ func (s *Server) serveConn(c net.Conn) error {
 	connRequestNum := uint64(0)
 
 	ctx := s.acquireCtx(c)
-	var br *bufio.Reader
-	var bw *bufio.Writer
-
-	var err error
-	var connectionClose bool
-	var isHTTP11 bool
-	var timeoutResponse *Response
-	var hijackHandler HijackHandler
+	var (
+		br *bufio.Reader
+		bw *bufio.Writer
+	)
+	var (
+		err             error
+		connectionClose bool
+		isHTTP11        bool
+		timeoutResponse *Response
+		hijackHandler   HijackHandler
+	)
 	for {
 		ctx.id++
 		connRequestNum++
@@ -1414,13 +1433,23 @@ func (s *Server) serveConn(c net.Conn) error {
 			}
 		}
 
-		connectionClose = ctx.Request.Header.connectionCloseFast()
+		connectionClose = s.DisableKeepalive || ctx.Request.Header.connectionCloseFast()
 		isHTTP11 = ctx.Request.Header.IsHTTP11()
 
 		ctx.connRequestNum = connRequestNum
 		ctx.connTime = connTime
 		ctx.time = currentTime
 		s.Handler(ctx)
+
+		timeoutResponse = ctx.timeoutResponse
+		if timeoutResponse != nil {
+			ctx = s.acquireCtx(c)
+			timeoutResponse.CopyTo(&ctx.Response)
+			if br != nil {
+				// Close connection, since br may be attached to the old ctx via ctx.fbr.
+				ctx.SetConnectionClose()
+			}
+		}
 
 		if !ctx.IsGet() && ctx.IsHead() {
 			ctx.Response.SkipBody = true
@@ -1432,15 +1461,6 @@ func (s *Server) serveConn(c net.Conn) error {
 
 		ctx.userValues.Reset()
 
-		timeoutResponse = ctx.timeoutResponse
-		if timeoutResponse != nil {
-			ctx = s.acquireCtx(c)
-			timeoutResponse.CopyTo(&ctx.Response)
-			if br != nil {
-				// Close connection, since br may be attached to the old ctx via ctx.fbr.
-				ctx.SetConnectionClose()
-			}
-		}
 		if s.MaxRequestsPerConn > 0 && connRequestNum >= uint64(s.MaxRequestsPerConn) {
 			ctx.SetConnectionClose()
 		}
@@ -1464,7 +1484,9 @@ func (s *Server) serveConn(c net.Conn) error {
 			}
 		}
 
-		connectionClose = connectionClose || ctx.Response.ConnectionClose()
+		// Verify Request.Header.connectionCloseFast() again,
+		// since request handler might trigger full headers' parsing.
+		connectionClose = connectionClose || ctx.Request.Header.connectionCloseFast() || ctx.Response.ConnectionClose()
 		if connectionClose {
 			ctx.Response.Header.SetCanonical(strConnection, strClose)
 		} else if !isHTTP11 {

@@ -38,9 +38,8 @@ var argsPool = &sync.Pool{
 type Args struct {
 	noCopy noCopy
 
-	args  []argsKV
-	bufKV argsKV
-	buf   []byte
+	args []argsKV
+	buf  []byte
 }
 
 type argsKV struct {
@@ -134,36 +133,60 @@ func (a *Args) WriteTo(w io.Writer) (int64, error) {
 
 // Del deletes argument with the given key from query args.
 func (a *Args) Del(key string) {
-	a.bufKV.key = append(a.bufKV.key[:0], key...)
-	a.DelBytes(a.bufKV.key)
+	a.args = delAllArgs(a.args, key)
 }
 
 // DelBytes deletes argument with the given key from query args.
 func (a *Args) DelBytes(key []byte) {
-	a.args = delAllArgs(a.args, key)
+	a.args = delAllArgs(a.args, b2s(key))
+}
+
+// Add adds 'key=value' argument.
+//
+// Multiple values for the same key may be added.
+func (a *Args) Add(key, value string) {
+	a.args = appendArg(a.args, key, value)
+}
+
+// AddBytesK adds 'key=value' argument.
+//
+// Multiple values for the same key may be added.
+func (a *Args) AddBytesK(key []byte, value string) {
+	a.args = appendArg(a.args, b2s(key), value)
+}
+
+// AddBytesV adds 'key=value' argument.
+//
+// Multiple values for the same key may be added.
+func (a *Args) AddBytesV(key string, value []byte) {
+	a.args = appendArg(a.args, key, b2s(value))
+}
+
+// AddBytesKV adds 'key=value' argument.
+//
+// Multiple values for the same key may be added.
+func (a *Args) AddBytesKV(key, value []byte) {
+	a.args = appendArg(a.args, b2s(key), b2s(value))
 }
 
 // Set sets 'key=value' argument.
 func (a *Args) Set(key, value string) {
-	a.bufKV.value = append(a.bufKV.value[:0], value...)
-	a.SetBytesV(key, a.bufKV.value)
+	a.args = setArg(a.args, key, value)
 }
 
 // SetBytesK sets 'key=value' argument.
 func (a *Args) SetBytesK(key []byte, value string) {
-	a.bufKV.value = append(a.bufKV.value[:0], value...)
-	a.SetBytesKV(key, a.bufKV.value)
+	a.args = setArg(a.args, b2s(key), value)
 }
 
 // SetBytesV sets 'key=value' argument.
 func (a *Args) SetBytesV(key string, value []byte) {
-	a.bufKV.key = append(a.bufKV.key[:0], key...)
-	a.SetBytesKV(a.bufKV.key, value)
+	a.args = setArg(a.args, key, b2s(value))
 }
 
 // SetBytesKV sets 'key=value' argument.
 func (a *Args) SetBytesKV(key, value []byte) {
-	a.args = setArg(a.args, key, value)
+	a.args = setArgBytes(a.args, key, value)
 }
 
 // Peek returns query arg value for the given key.
@@ -193,18 +216,17 @@ func (a *Args) PeekMulti(key string) [][]byte {
 
 // PeekMultiBytes returns all the arg values for the given key.
 func (a *Args) PeekMultiBytes(key []byte) [][]byte {
-	return a.PeekMulti(unsafeBytesToStr(key))
+	return a.PeekMulti(b2s(key))
 }
 
 // Has returns true if the given key exists in Args.
 func (a *Args) Has(key string) bool {
-	a.bufKV.key = append(a.bufKV.key[:0], key...)
-	return a.HasBytes(a.bufKV.key)
+	return hasArg(a.args, key)
 }
 
 // HasBytes returns true if the given key exists in Args.
 func (a *Args) HasBytes(key []byte) bool {
-	return hasArg(a.args, key)
+	return hasArg(a.args, b2s(key))
 }
 
 // ErrNoArgValue is returned when Args value with the given key is missing.
@@ -221,14 +243,15 @@ func (a *Args) GetUint(key string) (int, error) {
 
 // SetUint sets uint value for the given key.
 func (a *Args) SetUint(key string, value int) {
-	a.bufKV.key = append(a.bufKV.key[:0], key...)
-	a.SetUintBytes(a.bufKV.key, value)
+	bb := AcquireByteBuffer()
+	bb.B = AppendUint(bb.B[:0], value)
+	a.SetBytesV(key, bb.B)
+	ReleaseByteBuffer(bb)
 }
 
 // SetUintBytes sets uint value for the given key.
 func (a *Args) SetUintBytes(key []byte, value int) {
-	a.bufKV.value = AppendUint(a.bufKV.value[:0], value)
-	a.SetBytesKV(key, a.bufKV.value)
+	a.SetUint(b2s(key), value)
 }
 
 // GetUintOrZero returns uint value for the given key.
@@ -286,10 +309,14 @@ func copyArgs(dst, src []argsKV) []argsKV {
 	return dst
 }
 
-func delAllArgs(args []argsKV, key []byte) []argsKV {
+func delAllArgsBytes(args []argsKV, key []byte) []argsKV {
+	return delAllArgs(args, b2s(key))
+}
+
+func delAllArgs(args []argsKV, key string) []argsKV {
 	for i, n := 0, len(args); i < n; i++ {
 		kv := &args[i]
-		if bytes.Equal(kv.key, key) {
+		if key == string(kv.key) {
 			tmp := *kv
 			copy(args[i:], args[i+1:])
 			n--
@@ -300,11 +327,15 @@ func delAllArgs(args []argsKV, key []byte) []argsKV {
 	return args
 }
 
-func setArg(h []argsKV, key, value []byte) []argsKV {
+func setArgBytes(h []argsKV, key, value []byte) []argsKV {
+	return setArg(h, b2s(key), b2s(value))
+}
+
+func setArg(h []argsKV, key, value string) []argsKV {
 	n := len(h)
 	for i := 0; i < n; i++ {
 		kv := &h[i]
-		if bytes.Equal(kv.key, key) {
+		if key == string(kv.key) {
 			kv.value = append(kv.value[:0], value...)
 			return h
 		}
@@ -312,7 +343,11 @@ func setArg(h []argsKV, key, value []byte) []argsKV {
 	return appendArg(h, key, value)
 }
 
-func appendArg(args []argsKV, key, value []byte) []argsKV {
+func appendArgBytes(h []argsKV, key, value []byte) []argsKV {
+	return appendArg(h, b2s(key), b2s(value))
+}
+
+func appendArg(args []argsKV, key, value string) []argsKV {
 	var kv *argsKV
 	args, kv = allocArg(args)
 	kv.key = append(kv.key[:0], key...)
@@ -334,10 +369,10 @@ func releaseArg(h []argsKV) []argsKV {
 	return h[:len(h)-1]
 }
 
-func hasArg(h []argsKV, k []byte) bool {
+func hasArg(h []argsKV, key string) bool {
 	for i, n := 0, len(h); i < n; i++ {
 		kv := &h[i]
-		if bytes.Equal(kv.key, k) {
+		if key == string(kv.key) {
 			return true
 		}
 	}

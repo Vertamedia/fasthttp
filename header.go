@@ -144,7 +144,7 @@ func (h *ResponseHeader) SetConnectionClose() {
 func (h *ResponseHeader) ResetConnectionClose() {
 	if h.connectionClose {
 		h.connectionClose = false
-		h.h = delAllArgs(h.h, strConnection)
+		h.h = delAllArgsBytes(h.h, strConnection)
 	}
 }
 
@@ -171,7 +171,7 @@ func (h *RequestHeader) ResetConnectionClose() {
 	h.parseRawHeaders()
 	if h.connectionClose {
 		h.connectionClose = false
-		h.h = delAllArgs(h.h, strConnection)
+		h.h = delAllArgsBytes(h.h, strConnection)
 	}
 }
 
@@ -207,7 +207,7 @@ func (h *ResponseHeader) SetContentLength(contentLength int) {
 	h.contentLength = contentLength
 	if contentLength >= 0 {
 		h.contentLengthBytes = AppendUint(h.contentLengthBytes[:0], contentLength)
-		h.h = delAllArgs(h.h, strTransferEncoding)
+		h.h = delAllArgsBytes(h.h, strTransferEncoding)
 	} else {
 		h.contentLengthBytes = h.contentLengthBytes[:0]
 		value := strChunked
@@ -215,7 +215,7 @@ func (h *ResponseHeader) SetContentLength(contentLength int) {
 			h.SetConnectionClose()
 			value = strIdentity
 		}
-		h.h = setArg(h.h, strTransferEncoding, value)
+		h.h = setArgBytes(h.h, strTransferEncoding, value)
 	}
 }
 
@@ -253,10 +253,10 @@ func (h *RequestHeader) SetContentLength(contentLength int) {
 	h.contentLength = contentLength
 	if contentLength >= 0 {
 		h.contentLengthBytes = AppendUint(h.contentLengthBytes[:0], contentLength)
-		h.h = delAllArgs(h.h, strTransferEncoding)
+		h.h = delAllArgsBytes(h.h, strTransferEncoding)
 	} else {
 		h.contentLengthBytes = h.contentLengthBytes[:0]
-		h.h = setArg(h.h, strTransferEncoding, strChunked)
+		h.h = setArgBytes(h.h, strTransferEncoding, strChunked)
 	}
 }
 
@@ -797,7 +797,7 @@ func (h *ResponseHeader) del(key []byte) {
 	case "Connection":
 		h.connectionClose = false
 	}
-	h.h = delAllArgs(h.h, key)
+	h.h = delAllArgsBytes(h.h, key)
 }
 
 // Del deletes header with the given key.
@@ -831,7 +831,36 @@ func (h *RequestHeader) del(key []byte) {
 	case "Connection":
 		h.connectionClose = false
 	}
-	h.h = delAllArgs(h.h, key)
+	h.h = delAllArgsBytes(h.h, key)
+}
+
+// Add adds the given 'key: value' header.
+//
+// Multiple headers with the same key may be added.
+func (h *ResponseHeader) Add(key, value string) {
+	k := getHeaderKeyBytes(&h.bufKV, key, h.disableNormalizing)
+	h.h = appendArg(h.h, b2s(k), value)
+}
+
+// AddBytesK adds the given 'key: value' header.
+//
+// Multiple headers with the same key may be added.
+func (h *ResponseHeader) AddBytesK(key []byte, value string) {
+	h.Add(b2s(key), value)
+}
+
+// AddBytesV adds the given 'key: value' header.
+//
+// Multiple headers with the same key may be added.
+func (h *ResponseHeader) AddBytesV(key string, value []byte) {
+	h.Add(key, b2s(value))
+}
+
+// AddBytesKV adds the given 'key: value' header.
+//
+// Multiple headers with the same key may be added.
+func (h *ResponseHeader) AddBytesKV(key, value []byte) {
+	h.Add(b2s(key), b2s(value))
 }
 
 // Set sets the given 'key: value' header.
@@ -882,20 +911,20 @@ func (h *ResponseHeader) SetCanonical(key, value []byte) {
 			h.SetConnectionClose()
 		} else {
 			h.ResetConnectionClose()
-			h.h = setArg(h.h, key, value)
+			h.h = setArgBytes(h.h, key, value)
 		}
 	case "Transfer-Encoding":
 		// Transfer-Encoding is managed automatically.
 	case "Date":
 		// Date is managed automatically.
 	default:
-		h.h = setArg(h.h, key, value)
+		h.h = setArgBytes(h.h, key, value)
 	}
 }
 
 // SetCookie sets the given response cookie.
 func (h *ResponseHeader) SetCookie(cookie *Cookie) {
-	h.cookies = setArg(h.cookies, cookie.Key(), cookie.Cookie())
+	h.cookies = setArgBytes(h.cookies, cookie.Key(), cookie.Cookie())
 }
 
 // SetCookie sets 'key: value' cookies.
@@ -914,7 +943,36 @@ func (h *RequestHeader) SetCookieBytesK(key []byte, value string) {
 func (h *RequestHeader) SetCookieBytesKV(key, value []byte) {
 	h.parseRawHeaders()
 	h.collectCookies()
-	h.cookies = setArg(h.cookies, key, value)
+	h.cookies = setArgBytes(h.cookies, key, value)
+}
+
+// Add adds the given 'key: value' header.
+//
+// Multiple headers with the same key may be added.
+func (h *RequestHeader) Add(key, value string) {
+	k := getHeaderKeyBytes(&h.bufKV, key, h.disableNormalizing)
+	h.h = appendArg(h.h, b2s(k), value)
+}
+
+// AddBytesK adds the given 'key: value' header.
+//
+// Multiple headers with the same key may be added.
+func (h *RequestHeader) AddBytesK(key []byte, value string) {
+	h.Add(b2s(key), value)
+}
+
+// AddBytesV adds the given 'key: value' header.
+//
+// Multiple headers with the same key may be added.
+func (h *RequestHeader) AddBytesV(key string, value []byte) {
+	h.Add(key, b2s(value))
+}
+
+// AddBytesKV adds the given 'key: value' header.
+//
+// Multiple headers with the same key may be added.
+func (h *RequestHeader) AddBytesKV(key, value []byte) {
+	h.Add(b2s(key), b2s(value))
 }
 
 // Set sets the given 'key: value' header.
@@ -966,12 +1024,12 @@ func (h *RequestHeader) SetCanonical(key, value []byte) {
 			h.SetConnectionClose()
 		} else {
 			h.ResetConnectionClose()
-			h.h = setArg(h.h, key, value)
+			h.h = setArgBytes(h.h, key, value)
 		}
 	case "Transfer-Encoding":
 		// Transfer-Encoding is managed automatically.
 	default:
-		h.h = setArg(h.h, key, value)
+		h.h = setArgBytes(h.h, key, value)
 	}
 }
 
@@ -1594,7 +1652,7 @@ func (h *ResponseHeader) parseHeaders(buf []byte) (int, error) {
 		case "Transfer-Encoding":
 			if !bytes.Equal(s.value, strIdentity) {
 				h.contentLength = -1
-				h.h = setArg(h.h, strTransferEncoding, strChunked)
+				h.h = setArgBytes(h.h, strTransferEncoding, strChunked)
 			}
 		case "Set-Cookie":
 			h.cookies, kv = allocArg(h.cookies)
@@ -1605,10 +1663,10 @@ func (h *ResponseHeader) parseHeaders(buf []byte) (int, error) {
 				h.connectionClose = true
 			} else {
 				h.connectionClose = false
-				h.h = appendArg(h.h, s.key, s.value)
+				h.h = appendArgBytes(h.h, s.key, s.value)
 			}
 		default:
-			h.h = appendArg(h.h, s.key, s.value)
+			h.h = appendArgBytes(h.h, s.key, s.value)
 		}
 	}
 	if s.err != nil {
@@ -1620,7 +1678,7 @@ func (h *ResponseHeader) parseHeaders(buf []byte) (int, error) {
 		h.contentLengthBytes = h.contentLengthBytes[:0]
 	}
 	if h.contentLength == -2 && !h.ConnectionUpgrade() && !h.mustSkipContentLength() {
-		h.h = setArg(h.h, strTransferEncoding, strIdentity)
+		h.h = setArgBytes(h.h, strTransferEncoding, strIdentity)
 		h.connectionClose = true
 	}
 	if h.noHTTP11 && !h.connectionClose {
@@ -1658,17 +1716,17 @@ func (h *RequestHeader) parseHeaders(buf []byte) (int, error) {
 		case "Transfer-Encoding":
 			if !bytes.Equal(s.value, strIdentity) {
 				h.contentLength = -1
-				h.h = setArg(h.h, strTransferEncoding, strChunked)
+				h.h = setArgBytes(h.h, strTransferEncoding, strChunked)
 			}
 		case "Connection":
 			if bytes.Equal(s.value, strClose) {
 				h.connectionClose = true
 			} else {
 				h.connectionClose = false
-				h.h = appendArg(h.h, s.key, s.value)
+				h.h = appendArgBytes(h.h, s.key, s.value)
 			}
 		default:
-			h.h = appendArg(h.h, s.key, s.value)
+			h.h = appendArgBytes(h.h, s.key, s.value)
 		}
 	}
 	if s.err != nil {
@@ -1897,7 +1955,7 @@ func AppendNormalizedHeaderKey(dst []byte, key string) []byte {
 //   * HOST -> Host
 //   * foo-bar-baz -> Foo-Bar-Baz
 func AppendNormalizedHeaderKeyBytes(dst, key []byte) []byte {
-	return AppendNormalizedHeaderKey(dst, unsafeBytesToStr(key))
+	return AppendNormalizedHeaderKey(dst, b2s(key))
 }
 
 var errNeedMore = errors.New("need more data: cannot find trailing lf")

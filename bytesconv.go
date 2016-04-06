@@ -3,6 +3,7 @@ package fasthttp
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -40,7 +41,7 @@ func AppendHTMLEscape(dst []byte, s string) []byte {
 // AppendHTMLEscapeBytes appends html-escaped s to dst and returns
 // the extended dst.
 func AppendHTMLEscapeBytes(dst, s []byte) []byte {
-	return AppendHTMLEscape(dst, unsafeBytesToStr(s))
+	return AppendHTMLEscape(dst, b2s(s))
 }
 
 // AppendIPv4 appends string representation of the given ip v4 to dst
@@ -108,7 +109,7 @@ func AppendHTTPDate(dst []byte, date time.Time) []byte {
 
 // ParseHTTPDate parses HTTP-compliant (RFC1123) date.
 func ParseHTTPDate(date []byte) (time.Time, error) {
-	return time.Parse(time.RFC1123, unsafeBytesToStr(date))
+	return time.Parse(time.RFC1123, b2s(date))
 }
 
 // AppendUint appends n to dst and returns the extended dst.
@@ -138,15 +139,22 @@ func AppendUint(dst []byte, n int) []byte {
 func ParseUint(buf []byte) (int, error) {
 	v, n, err := parseUintBuf(buf)
 	if n != len(buf) {
-		return -1, fmt.Errorf("only %d bytes out of %d bytes exhausted when parsing int %q", n, len(buf), buf)
+		return -1, errUnexpectedTrailingChar
 	}
 	return v, err
 }
 
+var (
+	errEmptyInt               = errors.New("empty integer")
+	errUnexpectedFirstChar    = errors.New("unexpected first char found. Expecting 0-9")
+	errUnexpectedTrailingChar = errors.New("unexpected traling char found. Expecting 0-9")
+	errTooLongInt             = errors.New("too long int")
+)
+
 func parseUintBuf(b []byte) (int, int, error) {
 	n := len(b)
 	if n == 0 {
-		return -1, 0, fmt.Errorf("empty integer")
+		return -1, 0, errEmptyInt
 	}
 	v := 0
 	for i := 0; i < n; i++ {
@@ -154,22 +162,30 @@ func parseUintBuf(b []byte) (int, int, error) {
 		k := c - '0'
 		if k > 9 {
 			if i == 0 {
-				return -1, i, fmt.Errorf("unexpected first char %c. Expected 0-9", c)
+				return -1, i, errUnexpectedFirstChar
 			}
 			return v, i, nil
 		}
 		if i >= maxIntChars {
-			return -1, i, fmt.Errorf("too long int %q", b[:i+1])
+			return -1, i, errTooLongInt
 		}
 		v = 10*v + int(k)
 	}
 	return v, n, nil
 }
 
+var (
+	errEmptyFloat           = errors.New("empty float number")
+	errDuplicateFloatPoint  = errors.New("duplicate point found in float number")
+	errUnexpectedFloatEnd   = errors.New("unexpected end of float number")
+	errInvalidFloatExponent = errors.New("invalid float number exponent")
+	errUnexpectedFloatChar  = errors.New("unexpected char found in float number")
+)
+
 // ParseUfloat parses unsigned float from buf.
 func ParseUfloat(buf []byte) (float64, error) {
 	if len(buf) == 0 {
-		return -1, fmt.Errorf("empty float number")
+		return -1, errEmptyFloat
 	}
 	b := buf
 	var v uint64
@@ -179,14 +195,14 @@ func ParseUfloat(buf []byte) (float64, error) {
 		if c < '0' || c > '9' {
 			if c == '.' {
 				if pointFound {
-					return -1, fmt.Errorf("duplicate point found in %q", buf)
+					return -1, errDuplicateFloatPoint
 				}
 				pointFound = true
 				continue
 			}
 			if c == 'e' || c == 'E' {
 				if i+1 >= len(b) {
-					return -1, fmt.Errorf("unexpected end of float after %c. num=%q", c, buf)
+					return -1, errUnexpectedFloatEnd
 				}
 				b = b[i+1:]
 				minus := -1
@@ -201,11 +217,11 @@ func ParseUfloat(buf []byte) (float64, error) {
 				}
 				vv, err := ParseUint(b)
 				if err != nil {
-					return -1, fmt.Errorf("cannot parse exponent part of %q: %s", buf, err)
+					return -1, errInvalidFloatExponent
 				}
 				return float64(v) * offset * math.Pow10(minus*int(vv)), nil
 			}
-			return -1, fmt.Errorf("unexpected char found %c in %q", c, buf)
+			return -1, errUnexpectedFloatChar
 		}
 		v = 10*v + uint64(c-'0')
 		if pointFound {
@@ -214,6 +230,11 @@ func ParseUfloat(buf []byte) (float64, error) {
 	}
 	return float64(v) * offset, nil
 }
+
+var (
+	errEmptyHexNum    = errors.New("empty hex number")
+	errTooLargeHexNum = errors.New("too large hex number")
+)
 
 func readHexInt(r *bufio.Reader) (int, error) {
 	n := 0
@@ -230,13 +251,13 @@ func readHexInt(r *bufio.Reader) (int, error) {
 		k = hexbyte2int(c)
 		if k < 0 {
 			if i == 0 {
-				return -1, fmt.Errorf("cannot read hex num from empty string")
+				return -1, errEmptyHexNum
 			}
 			r.UnreadByte()
 			return n, nil
 		}
 		if i >= maxHexIntChars {
-			return -1, fmt.Errorf("cannot read hex num with more than %d digits", maxHexIntChars)
+			return -1, errTooLargeHexNum
 		}
 		n = (n << 4) | k
 		i++
@@ -325,12 +346,12 @@ func lowercaseBytes(b []byte) {
 	}
 }
 
-// unsafeBytesToStr converts byte slice to a string without memory allocation.
+// b2s converts byte slice to a string without memory allocation.
 // See https://groups.google.com/forum/#!msg/Golang-Nuts/ENgbUzYvCuU/90yGx7GUAgAJ .
 //
 // Note it may break if string and/or slice header will change
 // in the future go versions.
-func unsafeBytesToStr(b []byte) string {
+func b2s(b []byte) string {
 	return *(*string)(unsafe.Pointer(&b))
 }
 
