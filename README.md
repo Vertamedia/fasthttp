@@ -7,7 +7,7 @@
 Fast HTTP implementation for Go.
 
 Currently fasthttp is successfully used by [VertaMedia](https://vertamedia.com/)
-in a production serving 100K rps from more than 1M concurrent keep-alive
+in a production serving up to 200K rps from more than 1.5M concurrent keep-alive
 connections per physical server.
 
 [TechEmpower Benchmark round 12 results](https://www.techempower.com/benchmarks/#section=data-r12&hw=peak&test=plaintext)
@@ -15,6 +15,8 @@ connections per physical server.
 [Server Benchmarks](#http-server-performance-comparison-with-nethttp)
 
 [Client Benchmarks](#http-client-comparison-with-nethttp)
+
+[Install](#install)
 
 [Documentation](https://godoc.org/github.com/valyala/fasthttp)
 
@@ -27,6 +29,8 @@ connections per physical server.
 [Fasthttp best practices](#fasthttp-best-practices)
 
 [Tricks with byte buffers](#tricks-with-byte-buffers)
+
+[Related projects](#related-projects)
 
 [FAQ](#faq)
 
@@ -151,6 +155,14 @@ BenchmarkClientGetEndToEnd10Inmemory-4                  	10000000	      1458 ns/
 BenchmarkClientGetEndToEnd100Inmemory-4                 	10000000	      1329 ns/op	       0 B/op	       0 allocs/op
 BenchmarkClientGetEndToEnd1000Inmemory-4                	10000000	      1316 ns/op	       5 B/op	       0 allocs/op
 ```
+
+
+# Install
+
+```
+go get -u github.com/valyala/fasthttp
+```
+
 
 # Switching from net/http to fasthttp
 
@@ -464,6 +476,22 @@ b := a[:100]  // is valid, since cap(a) == 100.
 statusCode, body, err := fasthttp.Get(nil, "http://google.com/")
 uintBuf := fasthttp.AppendUint(nil, 1234)
 ```
+
+# Related projects
+
+  * [fasthttp-contrib](https://github.com/fasthttp-contrib) - various useful
+    helpers for projects based on fasthttp.
+  * [iris](https://github.com/kataras/iris) - web application framework built
+    on top of fasthttp. Features speed and functionality.
+  * [fasthttp-routing](https://github.com/qiangxue/fasthttp-routing) - fast and
+    powerful routing package for fasthttp servers.
+  * [fasthttprouter](https://github.com/buaazp/fasthttprouter) - a high
+    performance fasthttp request router that scales well.
+  * [echo](https://github.com/labstack/echo) - fast and unfancy HTTP server
+    framework with fasthttp support.
+  * [websocket](https://github.com/leavengood/websocket) - Gorilla-based
+    websocket implementation for fasthttp.
+
 
 # FAQ
 

@@ -17,6 +17,75 @@ import (
 	"github.com/valyala/fasthttp/fasthttputil"
 )
 
+func TestServerResponseServerHeader(t *testing.T) {
+	serverName := "foobar serv"
+
+	s := &Server{
+		Handler: func(ctx *RequestCtx) {
+			name := ctx.Response.Header.Server()
+			if string(name) != serverName {
+				fmt.Fprintf(ctx, "unexpected server name: %q. Expecting %q", name, serverName)
+			} else {
+				ctx.WriteString("OK")
+			}
+		},
+		Name: serverName,
+	}
+
+	ln := fasthttputil.NewInmemoryListener()
+
+	serverCh := make(chan struct{})
+	go func() {
+		if err := s.Serve(ln); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		close(serverCh)
+	}()
+
+	clientCh := make(chan struct{})
+	go func() {
+		c, err := ln.Dial()
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		if _, err = c.Write([]byte("GET / HTTP/1.1\r\nHost: aa\r\n\r\n")); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		br := bufio.NewReader(c)
+		var resp Response
+		if err = resp.Read(br); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+
+		if resp.StatusCode() != StatusOK {
+			t.Fatalf("unexpected status code: %d. Expecting %d", resp.StatusCode(), StatusOK)
+		}
+		if string(resp.Body()) != "OK" {
+			t.Fatalf("unexpected body: %q. Expecting %q", resp.Body(), "OK")
+		}
+		if err = c.Close(); err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+		close(clientCh)
+	}()
+
+	select {
+	case <-clientCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+
+	if err := ln.Close(); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	select {
+	case <-serverCh:
+	case <-time.After(time.Second):
+		t.Fatalf("timeout")
+	}
+}
+
 func TestServerResponseBodyStream(t *testing.T) {
 	ln := fasthttputil.NewInmemoryListener()
 
@@ -72,21 +141,12 @@ func TestServerResponseBodyStream(t *testing.T) {
 		}
 		close(readyCh)
 
-		n, err = br.Read(buf)
-		if err != nil {
-			t.Fatalf("unexpected error: %s", err)
-		}
-		b = buf[:n]
-		if string(b) != "6\r\nsecond\r\n" {
-			t.Fatalf("unexpected result %q. Expecting %q", b, "6\r\nsecond\r\n")
-		}
-
 		tail, err := ioutil.ReadAll(br)
 		if err != nil {
 			t.Fatalf("unexpected error: %s", err)
 		}
-		if string(tail) != "0\r\n\r\n" {
-			t.Fatalf("unexpected tail %q. Expecting %q", tail, "0\r\n\r\n")
+		if string(tail) != "6\r\nsecond\r\n0\r\n\r\n" {
+			t.Fatalf("unexpected tail %q. Expecting %q", tail, "6\r\nsecond\r\n0\r\n\r\n")
 		}
 
 		close(clientCh)

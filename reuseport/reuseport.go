@@ -1,4 +1,4 @@
-// +build linux darwin dragonfly freebsd netbsd openbsd
+// +build linux darwin dragonfly freebsd netbsd openbsd rumprun
 
 // Package reuseport provides TCP net.Listener with SO_REUSEPORT support.
 //
@@ -92,6 +92,7 @@ func Listen(network, addr string) (l net.Listener, err error) {
 	}
 
 	if err = file.Close(); err != nil {
+		l.Close()
 		return nil, err
 	}
 
