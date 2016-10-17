@@ -1,6 +1,7 @@
 package fasthttputil
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -8,6 +9,111 @@ import (
 	"testing"
 	"time"
 )
+
+func TestPipeConnsWriteTimeout(t *testing.T) {
+	pc := NewPipeConns()
+	c1 := pc.Conn1()
+
+	deadline := time.Now().Add(time.Millisecond)
+	if err := c1.SetWriteDeadline(deadline); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	data := []byte("foobar")
+	for {
+		_, err := c1.Write(data)
+		if err != nil {
+			if err == ErrTimeout {
+				break
+			}
+			t.Fatalf("unexpected error: %s", err)
+		}
+	}
+
+	for i := 0; i < 10; i++ {
+		_, err := c1.Write(data)
+		if err == nil {
+			t.Fatalf("expecting error")
+		}
+		if err != ErrTimeout {
+			t.Fatalf("unexpected error: %s. Expecting %s", err, ErrTimeout)
+		}
+	}
+
+	// read the written data
+	c2 := pc.Conn2()
+	if err := c2.SetReadDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	for {
+		_, err := c2.Read(data)
+		if err != nil {
+			if err == ErrTimeout {
+				break
+			}
+			t.Fatalf("unexpected error: %s", err)
+		}
+	}
+
+	for i := 0; i < 10; i++ {
+		_, err := c2.Read(data)
+		if err == nil {
+			t.Fatalf("expecting error")
+		}
+		if err != ErrTimeout {
+			t.Fatalf("unexpected error: %s. Expecting %s", err, ErrTimeout)
+		}
+	}
+}
+
+func TestPipeConnsPositiveReadTimeout(t *testing.T) {
+	testPipeConnsReadTimeout(t, time.Millisecond)
+}
+
+func TestPipeConnsNegativeReadTimeout(t *testing.T) {
+	testPipeConnsReadTimeout(t, -time.Second)
+}
+
+var zeroTime time.Time
+
+func testPipeConnsReadTimeout(t *testing.T, timeout time.Duration) {
+	pc := NewPipeConns()
+	c1 := pc.Conn1()
+
+	deadline := time.Now().Add(timeout)
+	if err := c1.SetReadDeadline(deadline); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	var buf [1]byte
+	for i := 0; i < 10; i++ {
+		_, err := c1.Read(buf[:])
+		if err == nil {
+			t.Fatalf("expecting error on iteration %d", i)
+		}
+		if err != ErrTimeout {
+			t.Fatalf("unexpected error on iteration %d: %s. Expecting %s", i, err, ErrTimeout)
+		}
+	}
+
+	// disable deadline and send data from c2 to c1
+	if err := c1.SetReadDeadline(zeroTime); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+
+	data := []byte("foobar")
+	c2 := pc.Conn2()
+	if _, err := c2.Write(data); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	dataBuf := make([]byte, len(data))
+	if _, err := io.ReadFull(c1, dataBuf); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if !bytes.Equal(data, dataBuf) {
+		t.Fatalf("unexpected data received: %q. Expecting %q", dataBuf, data)
+	}
+}
 
 func TestPipeConnsCloseWhileReadWriteConcurrent(t *testing.T) {
 	concurrency := 4
@@ -22,7 +128,7 @@ func TestPipeConnsCloseWhileReadWriteConcurrent(t *testing.T) {
 	for i := 0; i < concurrency; i++ {
 		select {
 		case <-ch:
-		case <-time.After(3*time.Second):
+		case <-time.After(3 * time.Second):
 			t.Fatalf("timeout")
 		}
 	}
@@ -40,45 +146,59 @@ func testPipeConnsCloseWhileReadWriteSerial(t *testing.T) {
 
 func testPipeConnsCloseWhileReadWrite(t *testing.T) {
 	pc := NewPipeConns()
-	readCh := make(chan struct{})
-	writeCh := make(chan struct{})
+	c1 := pc.Conn1()
+	c2 := pc.Conn2()
+
+	readCh := make(chan error)
 	go func() {
-		_, err := io.Copy(ioutil.Discard, pc.Conn1())
-		if err != nil {
+		var err error
+		if _, err = io.Copy(ioutil.Discard, c1); err != nil {
 			if err != errConnectionClosed {
-				t.Fatalf("unexpected error: %s", err)
+				err = fmt.Errorf("unexpected error: %s", err)
+			} else {
+				err = nil
 			}
 		}
-		close(readCh)
+		readCh <- err
 	}()
+
+	writeCh := make(chan error)
 	go func() {
+		var err error
 		for {
-			_, err := pc.Conn2().Write([]byte("foobar"))
-			if err != nil {
+			if _, err = c2.Write([]byte("foobar")); err != nil {
 				if err != errConnectionClosed {
-					t.Fatalf("unexpected error: %s", err)
+					err = fmt.Errorf("unexpected error: %s", err)
+				} else {
+					err = nil
 				}
 				break
 			}
 		}
-		close(writeCh)
+		writeCh <- err
 	}()
 
 	time.Sleep(10 * time.Millisecond)
-	if err := pc.Conn1().Close(); err != nil {
+	if err := c1.Close(); err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
-	if err := pc.Conn2().Close(); err != nil {
+	if err := c2.Close(); err != nil {
 		t.Fatalf("unexpected error: %s", err)
 	}
 
 	select {
-	case <-readCh:
+	case err := <-readCh:
+		if err != nil {
+			t.Fatalf("unexpected error in reader: %s", err)
+		}
 	case <-time.After(time.Second):
 		t.Fatalf("timeout")
 	}
 	select {
-	case <-writeCh:
+	case err := <-writeCh:
+		if err != nil {
+			t.Fatalf("unexpected error in writer: %s", err)
+		}
 	case <-time.After(time.Second):
 		t.Fatalf("timeout")
 	}
@@ -194,11 +314,11 @@ func testPipeConnsClose(t *testing.T, c1, c2 net.Conn) {
 
 	// attempt closing already closed conns
 	for i := 0; i < 10; i++ {
-		if err := c1.Close(); err == nil {
-			t.Fatalf("expecting error")
+		if err := c1.Close(); err != nil {
+			t.Fatalf("unexpected error: %s", err)
 		}
-		if err := c2.Close(); err == nil {
-			t.Fatalf("expecting error")
+		if err := c2.Close(); err != nil {
+			t.Fatalf("unexpected error: %s", err)
 		}
 	}
 }

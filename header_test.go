@@ -10,6 +10,139 @@ import (
 	"testing"
 )
 
+func TestResponseHeaderEmptyValueFromHeader(t *testing.T) {
+	var h1 ResponseHeader
+	h1.SetContentType("foo/bar")
+	h1.Set("EmptyValue1", "")
+	h1.Set("EmptyValue2", " ")
+	s := h1.String()
+
+	var h ResponseHeader
+	br := bufio.NewReader(bytes.NewBufferString(s))
+	if err := h.Read(br); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if string(h.ContentType()) != string(h1.ContentType()) {
+		t.Fatalf("unexpected content-type: %q. Expecting %q", h.ContentType(), h1.ContentType())
+	}
+	v1 := h.Peek("EmptyValue1")
+	if len(v1) > 0 {
+		t.Fatalf("expecting empty value. Got %q", v1)
+	}
+	v2 := h.Peek("EmptyValue2")
+	if len(v2) > 0 {
+		t.Fatalf("expecting empty value. Got %q", v2)
+	}
+}
+
+func TestResponseHeaderEmptyValueFromString(t *testing.T) {
+	s := "HTTP/1.1 200 OK\r\n" +
+		"EmptyValue1:\r\n" +
+		"Content-Type: foo/bar\r\n" +
+		"EmptyValue2: \r\n" +
+		"\r\n"
+
+	var h ResponseHeader
+	br := bufio.NewReader(bytes.NewBufferString(s))
+	if err := h.Read(br); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if string(h.ContentType()) != "foo/bar" {
+		t.Fatalf("unexpected content-type: %q. Expecting %q", h.ContentType(), "foo/bar")
+	}
+	v1 := h.Peek("EmptyValue1")
+	if len(v1) > 0 {
+		t.Fatalf("expecting empty value. Got %q", v1)
+	}
+	v2 := h.Peek("EmptyValue2")
+	if len(v2) > 0 {
+		t.Fatalf("expecting empty value. Got %q", v2)
+	}
+}
+
+func TestRequestHeaderEmptyValueFromHeader(t *testing.T) {
+	var h1 RequestHeader
+	h1.SetRequestURI("/foo/bar")
+	h1.SetHost("foobar")
+	h1.Set("EmptyValue1", "")
+	h1.Set("EmptyValue2", " ")
+	s := h1.String()
+
+	var h RequestHeader
+	br := bufio.NewReader(bytes.NewBufferString(s))
+	if err := h.Read(br); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if string(h.Host()) != string(h1.Host()) {
+		t.Fatalf("unexpected host: %q. Expecting %q", h.Host(), h1.Host())
+	}
+	v1 := h.Peek("EmptyValue1")
+	if len(v1) > 0 {
+		t.Fatalf("expecting empty value. Got %q", v1)
+	}
+	v2 := h.Peek("EmptyValue2")
+	if len(v2) > 0 {
+		t.Fatalf("expecting empty value. Got %q", v2)
+	}
+}
+
+func TestRequestHeaderEmptyValueFromString(t *testing.T) {
+	s := "GET / HTTP/1.1\r\n" +
+		"EmptyValue1:\r\n" +
+		"Host: foobar\r\n" +
+		"EmptyValue2: \r\n" +
+		"\r\n"
+	var h RequestHeader
+	br := bufio.NewReader(bytes.NewBufferString(s))
+	if err := h.Read(br); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if string(h.Host()) != "foobar" {
+		t.Fatalf("unexpected host: %q. Expecting %q", h.Host(), "foobar")
+	}
+	v1 := h.Peek("EmptyValue1")
+	if len(v1) > 0 {
+		t.Fatalf("expecting empty value. Got %q", v1)
+	}
+	v2 := h.Peek("EmptyValue2")
+	if len(v2) > 0 {
+		t.Fatalf("expecting empty value. Got %q", v2)
+	}
+}
+
+func TestRequestHeaderSetCookieWithSpecialChars(t *testing.T) {
+	var h RequestHeader
+	h.Set("Cookie", "ID&14")
+	s := h.String()
+
+	if !strings.Contains(s, "Cookie: ID&14") {
+		t.Fatalf("Missing cookie in request header: [%s]", s)
+	}
+
+	var h1 RequestHeader
+	br := bufio.NewReader(bytes.NewBufferString(s))
+	if err := h1.Read(br); err != nil {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	cookie := h1.Peek("Cookie")
+	if string(cookie) != "ID&14" {
+		t.Fatalf("unexpected cooke: %q. Expecting %q", cookie, "ID&14")
+	}
+
+	cookie = h1.Cookie("")
+	if string(cookie) != "ID&14" {
+		t.Fatalf("unexpected cooke: %q. Expecting %q", cookie, "ID&14")
+	}
+}
+
+func TestResponseHeaderDefaultStatusCode(t *testing.T) {
+	var h ResponseHeader
+	statusCode := h.StatusCode()
+	if statusCode != StatusOK {
+		t.Fatalf("unexpected status code: %d. Expecting %d", statusCode, StatusOK)
+	}
+}
+
 func TestResponseHeaderDelClientCookie(t *testing.T) {
 	cookieName := "foobar"
 
@@ -565,6 +698,9 @@ func TestRequestMultipartFormBoundary(t *testing.T) {
 	// boundary after other content-type params
 	testRequestMultipartFormBoundary(t, "POST / HTTP/1.1\r\nContent-Type: multipart/form-data;   foo=bar;   boundary=--aaabb  \r\n\r\n", "--aaabb")
 
+	// quoted boundary
+	testRequestMultipartFormBoundary(t, "POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=\"foobar\"\r\n\r\n", "foobar")
+
 	var h RequestHeader
 	h.SetMultipartFormBoundary("foobarbaz")
 	b := h.MultipartFormBoundary()
@@ -792,6 +928,9 @@ func TestRequestHeaderEmptyMethod(t *testing.T) {
 	}
 	if h.IsHead() {
 		t.Fatalf("empty method cannot be HEAD")
+	}
+	if h.IsDelete() {
+		t.Fatalf("empty method cannot be DELETE")
 	}
 }
 

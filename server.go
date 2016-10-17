@@ -10,7 +10,6 @@ import (
 	"mime/multipart"
 	"net"
 	"os"
-	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -216,15 +215,15 @@ type Server struct {
 	//
 	// The server rejects requests with bodies exceeding this limit.
 	//
-	// By default request body size is unlimited.
+	// Request body size is limited by DefaultMaxRequestBodySize by default.
 	MaxRequestBodySize int
 
 	// Aggressively reduces memory usage at the cost of higher CPU usage
 	// if set to true.
 	//
 	// Try enabling this option only if the server consumes too much memory
-	// serving mostly idle keep-alive connections (more than 1M concurrent
-	// connections). This may reduce memory usage by up to 50%.
+	// serving mostly idle keep-alive connections. This may reduce memory
+	// usage by more than 50%.
 	//
 	// Aggressive memory usage reduction is disabled by default.
 	ReduceMemoryUsage bool
@@ -272,6 +271,7 @@ type Server struct {
 	Logger Logger
 
 	concurrency      uint32
+	concurrencyCh    chan struct{}
 	perIPConnCounter perIPConnCounter
 	serverName       atomic.Value
 
@@ -285,12 +285,24 @@ type Server struct {
 // TimeoutHandler creates RequestHandler, which returns StatusRequestTimeout
 // error with the given msg to the client if h didn't return during
 // the given duration.
+//
+// The returned handler may return StatusTooManyRequests error with the given
+// msg to the client if there are more than Server.Concurrency concurrent
+// handlers h are running at the moment.
 func TimeoutHandler(h RequestHandler, timeout time.Duration, msg string) RequestHandler {
 	if timeout <= 0 {
 		return h
 	}
 
 	return func(ctx *RequestCtx) {
+		concurrencyCh := ctx.s.concurrencyCh
+		select {
+		case concurrencyCh <- struct{}{}:
+		default:
+			ctx.Error(msg, StatusTooManyRequests)
+			return
+		}
+
 		ch := ctx.timeoutCh
 		if ch == nil {
 			ch = make(chan struct{}, 1)
@@ -299,6 +311,7 @@ func TimeoutHandler(h RequestHandler, timeout time.Duration, msg string) Request
 		go func() {
 			h(ctx)
 			ch <- struct{}{}
+			<-concurrencyCh
 		}()
 		ctx.timeoutTimer = initTimer(ctx.timeoutTimer, timeout)
 		select {
@@ -330,6 +343,12 @@ func CompressHandler(h RequestHandler) RequestHandler {
 func CompressHandlerLevel(h RequestHandler, level int) RequestHandler {
 	return func(ctx *RequestCtx) {
 		h(ctx)
+		ce := ctx.Response.Header.PeekBytes(strContentEncoding)
+		if len(ce) > 0 {
+			// Do not compress responses with non-empty
+			// Content-Encoding.
+			return
+		}
 		if ctx.Request.Header.HasAcceptEncodingBytes(strGzip) {
 			ctx.Response.gzipBody(level)
 		} else if ctx.Request.Header.HasAcceptEncodingBytes(strDeflate) {
@@ -461,11 +480,34 @@ func (ctx *RequestCtx) UserValueBytes(key []byte) interface{} {
 	return ctx.userValues.GetBytes(key)
 }
 
+// VisitUserValues calls visitor for each existing userValue.
+//
+// visitor must not retain references to key and value after returning.
+// Make key and/or value copies if you need storing them after returning.
+func (ctx *RequestCtx) VisitUserValues(visitor func([]byte, interface{})) {
+	for i, n := 0, len(ctx.userValues); i < n; i++ {
+		kv := &ctx.userValues[i]
+		visitor(kv.key, kv.value)
+	}
+}
+
+type connTLSer interface {
+	ConnectionState() tls.ConnectionState
+}
+
 // IsTLS returns true if the underlying connection is tls.Conn.
 //
 // tls.Conn is an encrypted connection (aka SSL, HTTPS).
 func (ctx *RequestCtx) IsTLS() bool {
-	_, ok := ctx.c.(*tls.Conn)
+	// cast to (connTLSer) instead of (*tls.Conn), since it catches
+	// cases with overridden tls.Conn such as:
+	//
+	// type customConn struct {
+	//     *tls.Conn
+	//
+	//     // other custom fields here
+	// }
+	_, ok := ctx.c.(connTLSer)
 	return ok
 }
 
@@ -476,7 +518,7 @@ func (ctx *RequestCtx) IsTLS() bool {
 // The returned state may be used for verifying TLS version, client certificates,
 // etc.
 func (ctx *RequestCtx) TLSConnectionState() *tls.ConnectionState {
-	tlsConn, ok := ctx.c.(*tls.Conn)
+	tlsConn, ok := ctx.c.(connTLSer)
 	if !ok {
 		return nil
 	}
@@ -627,7 +669,7 @@ func (ctx *RequestCtx) Host() []byte {
 
 // QueryArgs returns query arguments from RequestURI.
 //
-// It doesn't return POST'ed arguments - use PostArge() for this.
+// It doesn't return POST'ed arguments - use PostArgs() for this.
 //
 // Returned arguments are valid until returning from RequestHandler.
 //
@@ -760,6 +802,11 @@ func (ctx *RequestCtx) IsPost() bool {
 // IsPut returns true if request method is PUT.
 func (ctx *RequestCtx) IsPut() bool {
 	return ctx.Request.Header.IsPut()
+}
+
+// IsDelete returns true if request method is DELETE.
+func (ctx *RequestCtx) IsDelete() bool {
+	return ctx.Request.Header.IsDelete()
 }
 
 // Method return request method.
@@ -1000,6 +1047,11 @@ func (ctx *RequestCtx) SetBodyStreamWriter(sw StreamWriter) {
 	ctx.Response.SetBodyStreamWriter(sw)
 }
 
+// IsBodyStream returns true if response body is set via SetBodyStream*.
+func (ctx *RequestCtx) IsBodyStream() bool {
+	return ctx.Response.IsBodyStream()
+}
+
 // Logger returns logger, which may be used for logging arbitrary
 // request-specific messages inside RequestHandler.
 //
@@ -1068,9 +1120,12 @@ func (ctx *RequestCtx) TimeoutErrorWithResponse(resp *Response) {
 	ctx.timeoutResponse = respCopy
 }
 
-// ListenAndServe serves HTTP requests from the given TCP addr.
+// ListenAndServe serves HTTP requests from the given TCP4 addr.
+//
+// Pass custom listener to Serve if you need listening on non-TCP4 media
+// such as IPv6.
 func (s *Server) ListenAndServe(addr string) error {
-	ln, err := net.Listen("tcp", addr)
+	ln, err := net.Listen("tcp4", addr)
 	if err != nil {
 		return err
 	}
@@ -1096,22 +1151,28 @@ func (s *Server) ListenAndServeUNIX(addr string, mode os.FileMode) error {
 	return s.Serve(ln)
 }
 
-// ListenAndServeTLS serves HTTPS requests from the given TCP addr.
+// ListenAndServeTLS serves HTTPS requests from the given TCP4 addr.
 //
 // certFile and keyFile are paths to TLS certificate and key files.
+//
+// Pass custom listener to Serve if you need listening on non-TCP4 media
+// such as IPv6.
 func (s *Server) ListenAndServeTLS(addr, certFile, keyFile string) error {
-	ln, err := net.Listen("tcp", addr)
+	ln, err := net.Listen("tcp4", addr)
 	if err != nil {
 		return err
 	}
 	return s.ServeTLS(ln, certFile, keyFile)
 }
 
-// ListenAndServeTLSEmbed serves HTTPS requests from the given TCP addr.
+// ListenAndServeTLSEmbed serves HTTPS requests from the given TCP4 addr.
 //
 // certData and keyData must contain valid TLS certificate and key data.
+//
+// Pass custom listener to Serve if you need listening on arbitrary media
+// such as IPv6.
 func (s *Server) ListenAndServeTLSEmbed(addr string, certData, keyData []byte) error {
-	ln, err := net.Listen("tcp", addr)
+	ln, err := net.Listen("tcp4", addr)
 	if err != nil {
 		return err
 	}
@@ -1179,6 +1240,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	var err error
 
 	maxWorkersCount := s.getConcurrency()
+	s.concurrencyCh = make(chan struct{}, maxWorkersCount)
 	wp := &workerPool{
 		WorkerFunc:      s.serveConn,
 		MaxWorkersCount: maxWorkersCount,
@@ -1349,15 +1411,26 @@ func nextConnID() uint64 {
 	return atomic.AddUint64(&globalConnID, 1)
 }
 
+// DefaultMaxRequestBodySize is the maximum request body size the server
+// reads by default.
+//
+// See Server.MaxRequestBodySize for details.
+const DefaultMaxRequestBodySize = 4 * 1024 * 1024
+
 func (s *Server) serveConn(c net.Conn) error {
 	serverName := s.getServerName()
 	connRequestNum := uint64(0)
 	connID := nextConnID()
 	currentTime := time.Now()
 	connTime := currentTime
+	maxRequestBodySize := s.MaxRequestBodySize
+	if maxRequestBodySize <= 0 {
+		maxRequestBodySize = DefaultMaxRequestBodySize
+	}
 
 	ctx := s.acquireCtx(c)
 	ctx.connTime = connTime
+	isTLS := ctx.IsTLS()
 	var (
 		br *bufio.Reader
 		bw *bufio.Writer
@@ -1390,6 +1463,7 @@ func (s *Server) serveConn(c net.Conn) error {
 			}
 		} else {
 			br, err = acquireByteReader(&ctx)
+			ctx.Request.isTLS = isTLS
 		}
 
 		if err == nil {
@@ -1397,7 +1471,7 @@ func (s *Server) serveConn(c net.Conn) error {
 				ctx.Request.Header.DisableNormalizing()
 				ctx.Response.Header.DisableNormalizing()
 			}
-			err = ctx.Request.readLimitBody(br, s.MaxRequestBodySize, s.GetOnly)
+			err = ctx.Request.readLimitBody(br, maxRequestBodySize, s.GetOnly)
 			if br.Buffered() == 0 || err != nil {
 				releaseReader(s, br)
 				br = nil
@@ -1433,7 +1507,7 @@ func (s *Server) serveConn(c net.Conn) error {
 			if br == nil {
 				br = acquireReader(ctx)
 			}
-			err = ctx.Request.ContinueReadBody(br, s.MaxRequestBodySize)
+			err = ctx.Request.ContinueReadBody(br, maxRequestBodySize)
 			if br.Buffered() == 0 || err != nil {
 				releaseReader(s, br)
 				br = nil
@@ -1491,6 +1565,10 @@ func (s *Server) serveConn(c net.Conn) error {
 			// There is no need in setting this header for http/1.1, since in http/1.1
 			// connections are keep-alive by default.
 			ctx.Response.Header.SetCanonical(strConnection, strKeepAlive)
+		}
+
+		if len(ctx.Response.Header.Server()) == 0 {
+			ctx.Response.Header.SetServerBytes(serverName)
 		}
 
 		if bw == nil {
@@ -1606,20 +1684,13 @@ func (s *Server) updateWriteDeadline(c net.Conn, ctx *RequestCtx, lastDeadlineTi
 
 func hijackConnHandler(r io.Reader, c net.Conn, s *Server, h HijackHandler) {
 	hjc := s.acquireHijackConn(r, c)
-
-	defer func() {
-		if r := recover(); r != nil {
-			s.logger().Printf("panic on hijacked conn: %s\nStack trace:\n%s", r, debug.Stack())
-		}
-
-		if br, ok := r.(*bufio.Reader); ok {
-			releaseReader(s, br)
-		}
-		c.Close()
-		s.releaseHijackConn(hjc)
-	}()
-
 	h(hjc)
+
+	if br, ok := r.(*bufio.Reader); ok {
+		releaseReader(s, br)
+	}
+	c.Close()
+	s.releaseHijackConn(hjc)
 }
 
 func (s *Server) acquireHijackConn(r io.Reader, c net.Conn) *hijackConn {
@@ -1759,13 +1830,37 @@ func (s *Server) acquireCtx(c net.Conn) *RequestCtx {
 	v := s.ctxPool.Get()
 	var ctx *RequestCtx
 	if v == nil {
-		v = &RequestCtx{
+		ctx = &RequestCtx{
 			s: s,
 		}
+		keepBodyBuffer := !s.ReduceMemoryUsage
+		ctx.Request.keepBodyBuffer = keepBodyBuffer
+		ctx.Response.keepBodyBuffer = keepBodyBuffer
+	} else {
+		ctx = v.(*RequestCtx)
 	}
-	ctx = v.(*RequestCtx)
 	ctx.c = c
 	return ctx
+}
+
+// Init2 prepares ctx for passing to RequestHandler.
+//
+// conn is used only for determining local and remote addresses.
+//
+// This function is intended for custom Server implementations.
+// See https://github.com/valyala/httpteleport for details.
+func (ctx *RequestCtx) Init2(conn net.Conn, logger Logger, reduceMemoryUsage bool) {
+	ctx.c = conn
+	ctx.logger.logger = logger
+	ctx.connID = nextConnID()
+	ctx.s = &fakeServer
+	ctx.connRequestNum = 0
+	ctx.connTime = time.Now()
+	ctx.time = ctx.connTime
+
+	keepBodyBuffer := !reduceMemoryUsage
+	ctx.Request.keepBodyBuffer = keepBodyBuffer
+	ctx.Response.keepBodyBuffer = keepBodyBuffer
 }
 
 // Init prepares ctx for passing to RequestHandler.
@@ -1777,35 +1872,31 @@ func (ctx *RequestCtx) Init(req *Request, remoteAddr net.Addr, logger Logger) {
 	if remoteAddr == nil {
 		remoteAddr = zeroTCPAddr
 	}
-	ctx.c = &fakeAddrer{
-		addr: remoteAddr,
+	c := &fakeAddrer{
+		laddr: zeroTCPAddr,
+		raddr: remoteAddr,
 	}
 	if logger == nil {
 		logger = defaultLogger
 	}
-	ctx.connID = nextConnID()
-	ctx.logger.logger = logger
-	ctx.s = &fakeServer
+	ctx.Init2(c, logger, true)
 	req.CopyTo(&ctx.Request)
-	ctx.Response.Reset()
-	ctx.connRequestNum = 0
-	ctx.connTime = time.Now()
-	ctx.time = ctx.connTime
 }
 
 var fakeServer Server
 
 type fakeAddrer struct {
 	net.Conn
-	addr net.Addr
+	laddr net.Addr
+	raddr net.Addr
 }
 
 func (fa *fakeAddrer) RemoteAddr() net.Addr {
-	return fa.addr
+	return fa.raddr
 }
 
 func (fa *fakeAddrer) LocalAddr() net.Addr {
-	return fa.addr
+	return fa.laddr
 }
 
 func (fa *fakeAddrer) Read(p []byte) (int, error) {

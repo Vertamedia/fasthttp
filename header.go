@@ -116,6 +116,9 @@ func (h *RequestHeader) SetByteRange(startPos, endPos int) {
 
 // StatusCode returns response status code.
 func (h *ResponseHeader) StatusCode() int {
+	if h.statusCode == 0 {
+		return StatusOK
+	}
 	return h.statusCode
 }
 
@@ -380,6 +383,9 @@ func (h *RequestHeader) MultipartFormBoundary() []byte {
 		if n = bytes.IndexByte(b, ';'); n >= 0 {
 			b = b[:n]
 		}
+		if len(b) > 1 && b[0] == '"' && b[len(b)-1] == '"' {
+			b = b[1 : len(b)-1]
+		}
 		return b
 	}
 	return nil
@@ -516,6 +522,11 @@ func (h *RequestHeader) IsHead() bool {
 		return false
 	}
 	return bytes.Equal(h.Method(), strHead)
+}
+
+// IsDelete returns true if request method is DELETE.
+func (h *RequestHeader) IsDelete() bool {
+	return bytes.Equal(h.Method(), strDelete)
 }
 
 // IsHTTP11 returns true if the request is HTTP/1.1.
@@ -836,7 +847,8 @@ func (h *RequestHeader) del(key []byte) {
 
 // Add adds the given 'key: value' header.
 //
-// Multiple headers with the same key may be added.
+// Multiple headers with the same key may be added with this function.
+// Use Set for setting a single header for the given key.
 func (h *ResponseHeader) Add(key, value string) {
 	k := getHeaderKeyBytes(&h.bufKV, key, h.disableNormalizing)
 	h.h = appendArg(h.h, b2s(k), value)
@@ -844,44 +856,55 @@ func (h *ResponseHeader) Add(key, value string) {
 
 // AddBytesK adds the given 'key: value' header.
 //
-// Multiple headers with the same key may be added.
+// Multiple headers with the same key may be added with this function.
+// Use SetBytesK for setting a single header for the given key.
 func (h *ResponseHeader) AddBytesK(key []byte, value string) {
 	h.Add(b2s(key), value)
 }
 
 // AddBytesV adds the given 'key: value' header.
 //
-// Multiple headers with the same key may be added.
+// Multiple headers with the same key may be added with this function.
+// Use SetBytesV for setting a single header for the given key.
 func (h *ResponseHeader) AddBytesV(key string, value []byte) {
 	h.Add(key, b2s(value))
 }
 
 // AddBytesKV adds the given 'key: value' header.
 //
-// Multiple headers with the same key may be added.
+// Multiple headers with the same key may be added with this function.
+// Use SetBytesKV for setting a single header for the given key.
 func (h *ResponseHeader) AddBytesKV(key, value []byte) {
 	h.Add(b2s(key), b2s(value))
 }
 
 // Set sets the given 'key: value' header.
+//
+// Use Add for setting multiple header values under the same key.
 func (h *ResponseHeader) Set(key, value string) {
 	initHeaderKV(&h.bufKV, key, value, h.disableNormalizing)
 	h.SetCanonical(h.bufKV.key, h.bufKV.value)
 }
 
 // SetBytesK sets the given 'key: value' header.
+//
+// Use AddBytesK for setting multiple header values under the same key.
 func (h *ResponseHeader) SetBytesK(key []byte, value string) {
 	h.bufKV.value = append(h.bufKV.value[:0], value...)
 	h.SetBytesKV(key, h.bufKV.value)
 }
 
 // SetBytesV sets the given 'key: value' header.
+//
+// Use AddBytesV for setting multiple header values under the same key.
 func (h *ResponseHeader) SetBytesV(key string, value []byte) {
 	k := getHeaderKeyBytes(&h.bufKV, key, h.disableNormalizing)
 	h.SetCanonical(k, value)
 }
 
 // SetBytesKV sets the given 'key: value' header.
+//
+// Use AddBytesKV for setting multiple header values under the same key.
 func (h *ResponseHeader) SetBytesKV(key, value []byte) {
 	h.bufKV.key = append(h.bufKV.key[:0], key...)
 	normalizeHeaderKey(h.bufKV.key, h.disableNormalizing)
@@ -1006,7 +1029,8 @@ func (h *RequestHeader) DelAllCookies() {
 
 // Add adds the given 'key: value' header.
 //
-// Multiple headers with the same key may be added.
+// Multiple headers with the same key may be added with this function.
+// Use Set for setting a single header for the given key.
 func (h *RequestHeader) Add(key, value string) {
 	k := getHeaderKeyBytes(&h.bufKV, key, h.disableNormalizing)
 	h.h = appendArg(h.h, b2s(k), value)
@@ -1014,44 +1038,55 @@ func (h *RequestHeader) Add(key, value string) {
 
 // AddBytesK adds the given 'key: value' header.
 //
-// Multiple headers with the same key may be added.
+// Multiple headers with the same key may be added with this function.
+// Use SetBytesK for setting a single header for the given key.
 func (h *RequestHeader) AddBytesK(key []byte, value string) {
 	h.Add(b2s(key), value)
 }
 
 // AddBytesV adds the given 'key: value' header.
 //
-// Multiple headers with the same key may be added.
+// Multiple headers with the same key may be added with this function.
+// Use SetBytesV for setting a single header for the given key.
 func (h *RequestHeader) AddBytesV(key string, value []byte) {
 	h.Add(key, b2s(value))
 }
 
 // AddBytesKV adds the given 'key: value' header.
 //
-// Multiple headers with the same key may be added.
+// Multiple headers with the same key may be added with this function.
+// Use SetBytesKV for setting a single header for the given key.
 func (h *RequestHeader) AddBytesKV(key, value []byte) {
 	h.Add(b2s(key), b2s(value))
 }
 
 // Set sets the given 'key: value' header.
+//
+// Use Add for setting multiple header values under the same key.
 func (h *RequestHeader) Set(key, value string) {
 	initHeaderKV(&h.bufKV, key, value, h.disableNormalizing)
 	h.SetCanonical(h.bufKV.key, h.bufKV.value)
 }
 
 // SetBytesK sets the given 'key: value' header.
+//
+// Use AddBytesK for setting multiple header values under the same key.
 func (h *RequestHeader) SetBytesK(key []byte, value string) {
 	h.bufKV.value = append(h.bufKV.value[:0], value...)
 	h.SetBytesKV(key, h.bufKV.value)
 }
 
 // SetBytesV sets the given 'key: value' header.
+//
+// Use AddBytesV for setting multiple header values under the same key.
 func (h *RequestHeader) SetBytesV(key string, value []byte) {
 	k := getHeaderKeyBytes(&h.bufKV, key, h.disableNormalizing)
 	h.SetCanonical(k, value)
 }
 
 // SetBytesKV sets the given 'key: value' header.
+//
+// Use AddBytesKV for setting multiple header values under the same key.
 func (h *RequestHeader) SetBytesKV(key, value []byte) {
 	h.bufKV.key = append(h.bufKV.key[:0], key...)
 	normalizeHeaderKey(h.bufKV.key, h.disableNormalizing)
@@ -1379,9 +1414,6 @@ func (h *ResponseHeader) String() string {
 func (h *ResponseHeader) AppendBytes(dst []byte) []byte {
 	statusCode := h.StatusCode()
 	if statusCode < 0 {
-		statusCode = StatusOK
-	}
-	if statusCode == 0 {
 		statusCode = StatusOK
 	}
 	dst = append(dst, statusLine(statusCode)...)

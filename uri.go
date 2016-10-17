@@ -217,8 +217,11 @@ func (u *URI) Parse(host, uri []byte) {
 	u.parse(host, uri, nil)
 }
 
-func (u *URI) parseQuick(uri []byte, h *RequestHeader) {
+func (u *URI) parseQuick(uri []byte, h *RequestHeader, isTLS bool) {
 	u.parse(nil, uri, h)
+	if isTLS {
+		u.scheme = append(u.scheme[:0], strHTTPS...)
+	}
 }
 
 func (u *URI) parse(host, uri []byte, h *RequestHeader) {
@@ -286,8 +289,19 @@ func normalizePath(dst, src []byte) []byte {
 	}
 	dst = dst[:bSize]
 
-	// remove /foo/../ parts
+	// remove /./ parts
 	b = dst
+	for {
+		n := bytes.Index(b, strSlashDotSlash)
+		if n < 0 {
+			break
+		}
+		nn := n + len(strSlashDotSlash) - 1
+		copy(b[n:], b[nn:])
+		b = b[:len(b)-nn+n]
+	}
+
+	// remove /foo/../ parts
 	for {
 		n := bytes.Index(b, strSlashDotDotSlash)
 		if n < 0 {
@@ -300,17 +314,6 @@ func normalizePath(dst, src []byte) []byte {
 		n += len(strSlashDotDotSlash) - 1
 		copy(b[nn:], b[n:])
 		b = b[:len(b)-n+nn]
-	}
-
-	// remove /./ parts
-	for {
-		n := bytes.Index(b, strSlashDotSlash)
-		if n < 0 {
-			break
-		}
-		nn := n + len(strSlashDotSlash) - 1
-		copy(b[n:], b[nn:])
-		b = b[:len(b)-nn+n]
 	}
 
 	// remove trailing /foo/..
@@ -371,8 +374,7 @@ func (u *URI) LastPathSegment() []byte {
 //     * Relative path, i.e.  xx?yy=abc . In this case the original RequestURI
 //       is updated according to the new relative path.
 func (u *URI) Update(newURI string) {
-	u.fullURI = append(u.fullURI[:0], newURI...)
-	u.UpdateBytes(u.fullURI)
+	u.UpdateBytes(s2b(newURI))
 }
 
 // UpdateBytes updates uri.
@@ -393,6 +395,22 @@ func (u *URI) updateBytes(newURI, buf []byte) []byte {
 	if len(newURI) == 0 {
 		return buf
 	}
+
+	n := bytes.Index(newURI, strSlashSlash)
+	if n >= 0 {
+		// absolute uri
+		var b [32]byte
+		schemeOriginal := b[:0]
+		if len(u.scheme) > 0 {
+			schemeOriginal = append([]byte(nil), u.scheme...)
+		}
+		u.Parse(nil, newURI)
+		if len(schemeOriginal) > 0 && len(u.scheme) == 0 {
+			u.scheme = append(u.scheme[:0], schemeOriginal...)
+		}
+		return buf
+	}
+
 	if newURI[0] == '/' {
 		// uri without host
 		buf = u.appendSchemeHost(buf[:0])
@@ -401,30 +419,29 @@ func (u *URI) updateBytes(newURI, buf []byte) []byte {
 		return buf
 	}
 
-	n := bytes.Index(newURI, strColonSlashSlash)
-	if n >= 0 {
-		// absolute uri
-		u.Parse(nil, newURI)
-		return buf
-	}
-
 	// relative path
-	if newURI[0] == '?' {
+	switch newURI[0] {
+	case '?':
 		// query string only update
 		u.SetQueryStringBytes(newURI[1:])
+		return append(buf[:0], u.FullURI()...)
+	case '#':
+		// update only hash
+		u.SetHashBytes(newURI[1:])
+		return append(buf[:0], u.FullURI()...)
+	default:
+		// update the last path part after the slash
+		path := u.Path()
+		n = bytes.LastIndexByte(path, '/')
+		if n < 0 {
+			panic("BUG: path must contain at least one slash")
+		}
+		buf = u.appendSchemeHost(buf[:0])
+		buf = appendQuotedPath(buf, path[:n+1])
+		buf = append(buf, newURI...)
+		u.Parse(nil, buf)
 		return buf
 	}
-
-	path := u.Path()
-	n = bytes.LastIndexByte(path, '/')
-	if n < 0 {
-		panic("BUG: path must contain at least one slash")
-	}
-	buf = u.appendSchemeHost(buf[:0])
-	buf = appendQuotedPath(buf, path[:n+1])
-	buf = append(buf, newURI...)
-	u.Parse(nil, buf)
-	return buf
 }
 
 // FullURI returns full uri in the form {Scheme}://{Host}{RequestURI}#{Hash}.
@@ -459,7 +476,7 @@ func (u *URI) String() string {
 }
 
 func splitHostURI(host, uri []byte) ([]byte, []byte, []byte) {
-	n := bytes.Index(uri, strColonSlashSlash)
+	n := bytes.Index(uri, strSlashSlash)
 	if n < 0 {
 		return strHTTP, host, uri
 	}
@@ -467,7 +484,10 @@ func splitHostURI(host, uri []byte) ([]byte, []byte, []byte) {
 	if bytes.IndexByte(scheme, '/') >= 0 {
 		return strHTTP, host, uri
 	}
-	n += len(strColonSlashSlash)
+	if len(scheme) > 0 && scheme[len(scheme)-1] == ':' {
+		scheme = scheme[:len(scheme)-1]
+	}
+	n += len(strSlashSlash)
 	uri = uri[n:]
 	n = bytes.IndexByte(uri, '/')
 	if n < 0 {
